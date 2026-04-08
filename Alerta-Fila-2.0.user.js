@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Alerta Fila
+// @name         Alerta-Fila
 // @namespace    http://tampermonkey.net/
 // @version      2.0
 // @description  Painel completo - Nova CR (v2.0 - bugs corrigidos)
@@ -8,8 +8,8 @@
 // @match        *://centralderequisicoes-root-qas.telemedicinaeinstein.com.br/*
 // @run-at       document-end
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/refs/heads/main/alertafilacr.js
-// @downloadURL  https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/refs/heads/main/alertafilacr.js
+// @updateURL    https://github.com/ryanrn/central-requisi-es-nova/raw/refs/heads/main/Alerta%20Fila-2.0.user.js 
+// @downloadURL  https://github.com/ryanrn/central-requisi-es-nova/raw/refs/heads/main/Alerta%20Fila-2.0.user.js
 // ==/UserScript==
 
 (function() {
