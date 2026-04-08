@@ -2,7 +2,7 @@
 // @name         Alerta Fila
 // @namespace    http://tampermonkey.net/
 // @version      2.0
-// @description  Painel completo - Nova CR ZDS (v2.0 - bugs corrigidos)
+// @description  Painel completo - Nova CR (v2.0 - bugs corrigidos)
 // @author       Ryan
 // @match        *://centralderequisicoes-root.telemedicinaeinstein.com.br/*
 // @match        *://centralderequisicoes-root-qas.telemedicinaeinstein.com.br/*
