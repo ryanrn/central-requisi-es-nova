@@ -12,81 +12,9 @@
 // @downloadURL  https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/Alerta-Fila-v2.0.user.js
 // ==/UserScript==
 
-/*
-
-- ============================================================
-- ALERTA FILA v2.0 — CHANGELOG
-- ============================================================
-- [FIX] Beep de novo paciente: detecção migrada para
-- ```
-     checkWaitTimes() via Set de PIDs anteriores.
-  ```
-- ```
-     O MutationObserver disparava antes do nó ser
-  ```
-- ```
-     totalmente renderizado, getPatientId() retornava
-  ```
-- ```
-     null e o alerta era descartado silenciosamente.
-  ```
-- 
-- [FIX] Beep SLA 60 s: patientAlertHistory agora é limpo
-- ```
-     ao iniciar (entradas com > 4 h ou de outro dia são
-  ```
-- ```
-     descartadas). O problema era alerted60:true salvo
-  ```
-- ```
-     de sessão anterior para o mesmo paciente.
-  ```
-- 
-- [FIX] SLA Persistente: timeout do card corrigido de
-- ```
-     200 000 ms para 20 000 ms. findNodeById agora usa
-  ```
-- ```
-     um Map construído em cada ciclo, evitando
-  ```
-- ```
-     querySelectorAll repetidos.
-  ```
-- 
-- [FIX] getWaitingTime: regex mais permissivo (\d{1,2})
-- ```
-     e busca ampliada para <p> além de <span>.
-  ```
-- 
-- [FIX] getPatientId: se o documento não estiver
-- ```
-     disponível usa fallback de posição + nome, e
-  ```
-- ```
-     registra aviso no console para debug.
-  ```
-- 
-- [MELHORIA] Limpeza automática de patientAlertHistory
-- ```
-          a cada 5 min (entradas > 4 h removidas).
-  ```
-- 
-- [MELHORIA] Painel de debug no console (Ctrl+Alt+D)
-- ```
-          mostra estado atual de cada paciente.
-  ```
-- 
-- [MELHORIA] Logs detalhados: cada ciclo imprime o que
-- ```
-          foi encontrado — fácil diagnóstico de seletor.
-  ```
-- ============================================================
-  */
-
-(function () {
-‘use strict’;
-
-```
+(function() {
+    'use strict';
+     
 // ========================
 // === CONFIGURAÇÕES
 // ========================
@@ -1027,7 +955,6 @@ ready(() => {
 
     console.log(`[Fila v${VERSAO}] 🚀 Iniciado!`);
     console.log(`[Fila v${VERSAO}] Atalhos: Ctrl+Alt+F = painel | Ctrl+Alt+S = parar alertas | Ctrl+Alt+D = debug`);
-});
-```
+})();
 
 })();
