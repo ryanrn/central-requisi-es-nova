@@ -8,8 +8,8 @@
 // @match        *://centralderequisicoes-root-qas.telemedicinaeinstein.com.br/*
 // @run-at       document-end
 // @grant        none
-// @updateURL    https://github.com/ryanrn/central-requisi-es-nova/raw/refs/heads/main/Alerta%20Fila-2.0.user.js 
-// @downloadURL  https://github.com/ryanrn/central-requisi-es-nova/raw/refs/heads/main/Alerta%20Fila-2.0.user.js
+// @downloadURL   https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/main/Alerta-Fila-2.0.user.js
+// @updateURL     https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/main/Alerta-Fila-2.0.user.js
 // ==/UserScript==
 
 (function() {
