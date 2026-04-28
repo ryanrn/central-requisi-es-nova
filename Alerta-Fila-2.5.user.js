@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Alerta-Fila
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  CR ATT
 // @author       Ryan
 // @match        *://centralderequisicoes-root.telemedicinaeinstein.com.br/*
 // @match        *://centralderequisicoes-root-qas.telemedicinaeinstein.com.br/*
 // @run-at       document-end
 // @grant        none
-// @downloadURL   https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/main/Alerta-Fila-2.4.user.js
-// @updateURL     https://raw.githubusercontent.com/ryanrn/central-requisi-es-nova/main/Alerta-Fila-2.4.user.js
+// @downloadURL  https://raw.githubusercontent.com/ryanrn/meus-userscripts/main/Alerta-Fila-2.5.user.js
+// @updateURL    https://raw.githubusercontent.com/ryanrn/meus-userscripts/main/Alerta-Fila-2.5.user.js
 // ==/UserScript==
 
 (function () {
@@ -18,7 +18,7 @@
     // ========================
     // === CONFIGURAÇÕES
     // ========================
-    const VERSAO                 = '2.4';
+    const VERSAO                 = '2.5';
     const QUANTIDADE_DE_BEEPS    = 3;
     const BEEP_INTERVAL_MS       = 1000;
     const soundUrl               = 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg';
@@ -26,19 +26,12 @@
     const TIME_30S_SECONDS       = 30;
     const CHECK_INTERVAL_MS      = 2000;
     const PERSISTENT_INTERVAL_MS = 5000;
-    const HISTORY_MAX_AGE_MS     = 4 * 60 * 60 * 1000;   // 4h
-    const CLEANUP_INTERVAL_MS    = 5 * 60 * 1000;         // 5min
+    const HISTORY_MAX_AGE_MS     = 4 * 60 * 60 * 1000;  // 4h
+    const CLEANUP_INTERVAL_MS    = 5 * 60 * 1000;        // 5min
 
-    // [v2.4] Após este tempo a partir de quando o alerta persistente foi
-    // ADICIONADO (não do SLA), ele para sozinho para a sessão atual.
-    // Na TV, cada reload de 30s re-adiciona o alerta, então continua alertando.
-    // Em uso normal, para em 2 minutos — evita o loop infinito do feedback.
-    const PERSISTENT_SESSION_MAX_MS = 2 * 60 * 1000;     // 2 min por sessão
-
-    // [v2.4] Ao carregar a página, restaura SLA ativo do histórico
-    // apenas se o SLA foi disparado há menos de X minutos.
-    // Garante que a TV continue alertando após o reload de 30s.
-    const SLA_RESTORE_MAX_AGE_MS = 10 * 60 * 1000;       // 10 min
+    // Após este tempo a partir de quando o alerta persistente foi
+    // adicionado, ele para sozinho para a sessão atual.
+    const PERSISTENT_SESSION_MAX_MS = 2 * 60 * 1000;    // 2 min por sessão
 
     const ROW_SELECTORS = [
         '.sc-bXWnss.ehsfmy',
@@ -68,16 +61,8 @@
     let persistentVisualElements = new Map();
     let persistentAlertInterval  = null;
 
-    let dailyStats  = { atendidosHoje: 0, slaEstourados: 0 };
-    let dashboardEl = null;
-    let eventLog    = [];
-
-    // [v2.4] Áudio simplificado: apenas new Audio() + keep-alive direto
     let keepAliveAudio   = null;
     let keepAliveStarted = false;
-
-    let titleFlashInterval = null;
-    const originalTitle    = document.title;
 
     // ========================
     // === BADGE DE VERSÃO
@@ -211,18 +196,8 @@
     }
 
     // ========================
-    // === ÁUDIO (v2.4)
-    //
-    // ABORDAGEM SIMPLIFICADA:
-    // - primeAudio(): toca 1x em volume baixo para desbloquear autoplay,
-    //   depois inicia keep-alive em loop silencioso usando o MESMO
-    //   mecanismo (new Audio), sem depender de AudioContext/WAV/Blob.
-    // - Keep-alive: new Audio(soundUrl) em loop com volume 0.
-    //   Mantém a permissão de autoplay ativa e evita throttling da aba.
-    // - playBeeps(): new Audio(soundUrl) — funciona em background
-    //   desde que o keep-alive esteja rodando.
+    // === ÁUDIO
     // ========================
-
     function primeAudio() {
         const unlock = new Audio(soundUrl);
         unlock.volume = 0.01;
@@ -234,8 +209,7 @@
                 startKeepAlive();
             })
             .catch(err => {
-                console.warn(`[Fila v${VERSAO}] ⚠️ primeAudio falhou (sem interação?):`, err.message);
-                // Tenta novamente na primeira interação do usuário com a página
+                console.warn(`[Fila v${VERSAO}] ⚠️ primeAudio falhou:`, err.message);
                 const retry = () => {
                     document.removeEventListener('click',   retry);
                     document.removeEventListener('keydown', retry);
@@ -250,7 +224,7 @@
         if (keepAliveStarted) return;
         keepAliveAudio = new Audio(soundUrl);
         keepAliveAudio.loop   = true;
-        keepAliveAudio.volume = 0;        // silencioso — só mantém permissão ativa
+        keepAliveAudio.volume = 0;
         keepAliveAudio.play()
             .then(() => {
                 keepAliveStarted = true;
@@ -269,61 +243,17 @@
     function playBeeps(vol) {
         if (!audioEnabled) return;
         const v = typeof vol === 'number' ? vol : volume;
-        console.log(`[Fila v${VERSAO}] 🔊 Beep x${QUANTIDADE_DE_BEEPS} vol=${v}`);
         for (let i = 0; i < QUANTIDADE_DE_BEEPS; i++) {
             setTimeout(() => {
                 const a = new Audio(soundUrl);
                 a.volume = v;
                 a.play().catch(err => {
                     console.warn(`[Fila v${VERSAO}] Beep falhou:`, err.message);
-                    // keep-alive pode ter morrido — tenta reativar
                     if (!keepAliveStarted) startKeepAlive();
                 });
             }, i * BEEP_INTERVAL_MS);
         }
     }
-
-    // ========================
-    // === NOTIFICAÇÕES BROWSER
-    // ========================
-    async function requestNotificationPermission() {
-        if (!('Notification' in window)) return 'unsupported';
-        if (Notification.permission !== 'default') return Notification.permission;
-        try { return await Notification.requestPermission(); }
-        catch (e) { return 'error'; }
-    }
-
-    function showBrowserNotification(title, body, tag) {
-        if (!('Notification' in window) || Notification.permission !== 'granted') return;
-        try {
-            const n = new Notification(title, {
-                body, tag: tag || 'fila-alerta', renotify: true,
-                requireInteraction: false,
-                icon: 'https://centralderequisicoes-root.telemedicinaeinstein.com.br/favicon.ico'
-            });
-            n.onclick = () => { window.focus(); n.close(); };
-            setTimeout(() => n.close(), 8000);
-        } catch (_) {}
-    }
-
-    // ========================
-    // === PISCADA NO TÍTULO
-    // ========================
-    function startTitleFlash(text) {
-        if (titleFlashInterval) clearInterval(titleFlashInterval);
-        let t = false;
-        titleFlashInterval = setInterval(() => {
-            document.title = t ? `🚨 ${text}` : originalTitle;
-            t = !t;
-        }, 800);
-    }
-
-    function stopTitleFlash() {
-        if (titleFlashInterval) { clearInterval(titleFlashInterval); titleFlashInterval = null; }
-        document.title = originalTitle;
-    }
-
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) stopTitleFlash(); });
 
     // ========================
     // === NOTIFICAÇÕES VISUAIS
@@ -370,13 +300,8 @@
     }
 
     // ========================
-    // === LOG / ESTADO
+    // === ESTADO / PERSISTÊNCIA
     // ========================
-    function logEvent(name, type, detail) {
-        eventLog.push({ ts: Date.now(), name, type, detail });
-        if (eventLog.length > 500) eventLog = eventLog.slice(-500);
-    }
-
     function loadState() {
         try {
             audioEnabled         = localStorage.getItem('fila_audio') === 'true';
@@ -384,14 +309,6 @@
             isPanelVisible       = localStorage.getItem('fila_panel') !== 'false';
             const v = parseFloat(localStorage.getItem('fila_vol') || '1');
             volume = isNaN(v) ? 1 : Math.max(0, Math.min(1, v));
-
-            const rawStats = localStorage.getItem('fila_stats');
-            if (rawStats) {
-                const p = JSON.parse(rawStats);
-                dailyStats = p.date === new Date().toDateString()
-                    ? p.stats
-                    : { atendidosHoje: 0, slaEstourados: 0 };
-            }
 
             const hist = localStorage.getItem('fila_hist');
             if (hist) {
@@ -404,8 +321,6 @@
                         clean[pid] = entry;
                 }
                 patientAlertHistory = clean;
-                const removed = Object.keys(raw).length - Object.keys(clean).length;
-                if (removed > 0) console.log(`[Fila v${VERSAO}] 🧹 ${removed} entradas antigas removidas.`);
             }
         } catch (e) {
             console.warn(`[Fila v${VERSAO}] Erro ao carregar estado:`, e);
@@ -418,14 +333,6 @@
             localStorage.setItem('fila_attended', String(attendedCheckEnabled));
             localStorage.setItem('fila_panel',    String(isPanelVisible));
             localStorage.setItem('fila_vol',      String(volume));
-        } catch (_) {}
-    }
-
-    function saveStats() {
-        try {
-            localStorage.setItem('fila_stats', JSON.stringify({
-                date: new Date().toDateString(), stats: dailyStats
-            }));
         } catch (_) {}
     }
 
@@ -444,66 +351,18 @@
                 removed++;
             }
         }
-        if (removed > 0) { console.log(`[Fila v${VERSAO}] 🧹 Limpeza: ${removed} removidas.`); saveHistory(); }
-    }
-
-    function resetTudo() {
-        dailyStats = { atendidosHoje: 0, slaEstourados: 0 };
-        patientAlertHistory = {};
-        previousPids  = new Set();
-        isFirstCycle  = true;
-        saveStats();
-        saveHistory();
-        updateDashboard();
-    }
-
-    function updateDashboard() {
-        if (!dashboardEl) return;
-        const notifStatus = !('Notification' in window)
-            ? '<span style="color:#e65100;">❌ N/A</span>'
-            : Notification.permission === 'granted'
-                ? '<span style="color:#2e7d32;">✅ Ativo</span>'
-                : Notification.permission === 'denied'
-                    ? '<span style="color:#c50b0b;">🚫 Bloqueado</span>'
-                    : '<span style="color:#e65100;">⚠️ Pendente</span>';
-        dashboardEl.innerHTML = `
-            <div style="font-size:12px;color:#666;margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">📊 Estatísticas de Hoje</div>
-            <div style="display:flex;justify-content:space-around;margin-bottom:8px;">
-                <div style="text-align:center;">
-                    <div style="font-size:28px;font-weight:900;color:#0096D2;">${dailyStats.atendidosHoje}</div>
-                    <div style="font-size:11px;color:#888;">Atendidos</div>
-                </div>
-                <div style="text-align:center;">
-                    <div style="font-size:28px;font-weight:900;color:#c50b0b;">${dailyStats.slaEstourados}</div>
-                    <div style="font-size:11px;color:#888;">SLA Crítico</div>
-                </div>
-            </div>
-            <div style="font-size:11px;color:#666;border-top:1px solid #eee;padding-top:6px;">
-                🔔 Notificações: ${notifStatus}
-            </div>
-        `;
+        if (removed > 0) { saveHistory(); }
     }
 
     // ========================
-    // === ALERTAS PERSISTENTES (v2.4)
-    //
-    // Cada entrada agora tem `addedAt` (momento em que foi criada
-    // nesta sessão). Após PERSISTENT_SESSION_MAX_MS (2min) sem que
-    // o paciente saia ou seja atendido, o alerta para NESTA sessão.
-    //
-    // Na TV (reload a cada 30s): a cada reload, `addedAt` é
-    // resetado via restorePersistentAlertsFromHistory(), então os
-    // alertas continuam enquanto o SLA estiver ativo.
-    //
-    // Em uso normal: para em até 2 min — evita o "não parava de tocar".
+    // === ALERTAS PERSISTENTES
     // ========================
-
     function addPersistentAlert(pid, name, time) {
         persistentAlerts.set(pid, {
             name,
             time,
             lastAlert: Date.now(),
-            addedAt:   Date.now()     // [v2.4] marca início desta sessão
+            addedAt:   Date.now()
         });
         console.log(`[Fila v${VERSAO}] 🚨 Alerta persistente: "${name}"`);
         if (!persistentAlertInterval) startPersistent();
@@ -524,8 +383,7 @@
             const now = Date.now();
             persistentAlerts.forEach((data, pid) => {
 
-                // [v2.4] FIX RUNAWAY: para após PERSISTENT_SESSION_MAX_MS
-                // (2 minutos) na mesma sessão, mesmo sem detecção de atendimento.
+                // Para após PERSISTENT_SESSION_MAX_MS (2 min) na mesma sessão
                 if (now - data.addedAt > PERSISTENT_SESSION_MAX_MS) {
                     console.log(`[Fila v${VERSAO}] ⏰ Alerta persistente expirou (2min): "${data.name}"`);
                     removePersistentAlert(pid);
@@ -544,12 +402,6 @@
                     data.lastAlert = now;
                     playBeeps(volume * 0.7);
                     showPersistentCard(pid, data.name);
-                    showBrowserNotification(
-                        `🚨 SLA CRÍTICO — ${data.name}`,
-                        `Aguardando há mais de ${TIME_SLA_SECONDS}s`,
-                        `sla-${pid}`
-                    );
-                    if (document.hidden) startTitleFlash(`SLA: ${data.name}`);
                 }
             });
         }, 1500);
@@ -560,7 +412,6 @@
         persistentAlertInterval = null;
         persistentVisualElements.forEach(v => v.remove());
         persistentVisualElements.clear();
-        stopTitleFlash();
     }
 
     function showPersistentCard(pid, name) {
@@ -588,34 +439,6 @@
     }
 
     // ========================
-    // === RESTAURAÇÃO DE SLA APÓS RELOAD (v2.4)
-    //
-    // Chamado após loadState(). Verifica o histórico salvo:
-    // pacientes com alerted60=true, wasAttended=false e SLA
-    // disparado há menos de SLA_RESTORE_MAX_AGE_MS (10min)
-    // são re-adicionados ao mapa de alertas persistentes.
-    //
-    // Garante que a TV continue alertando após o reload de 30s:
-    // cada reload re-adiciona o alerta com addedAt=agora,
-    // recomeçando o timer de 2 min.
-    // ========================
-    function restorePersistentAlertsFromHistory() {
-        const now   = Date.now();
-        let restored = 0;
-        for (const [pid, entry] of Object.entries(patientAlertHistory)) {
-            if (!entry.alerted60 || entry.wasAttended) continue;
-            const slaAge = now - (entry.alerted60At || 0);
-            if (slaAge < SLA_RESTORE_MAX_AGE_MS) {
-                const name = pid.split('|')[0];
-                addPersistentAlert(pid, name, '');
-                restored++;
-            }
-        }
-        if (restored > 0)
-            console.log(`[Fila v${VERSAO}] 🔄 ${restored} alerta(s) SLA restaurados do histórico (TV reload).`);
-    }
-
-    // ========================
     // === FILA DE ALERTAS
     // ========================
     function enqueue(kind, name, time) {
@@ -630,16 +453,10 @@
         playBeeps(volume);
         if (a.kind === 'novo') {
             showTopBanner('🆕', 'Novo paciente na fila!', a.name, '#2e7d32');
-            showBrowserNotification('🆕 Novo paciente na fila!', a.name || '', 'novo-paciente');
-            if (document.hidden) startTitleFlash('Novo paciente!');
         } else if (a.kind === '30s') {
             showTopBanner('⚠️', a.name, `Aguardando: ${a.time}`, '#e65100');
-            showBrowserNotification(`⚠️ Atenção — ${a.name}`, `Aguardando há ${a.time}`, `alerta30-${a.name}`);
-            if (document.hidden) startTitleFlash(`Atenção: ${a.name}`);
         } else if (a.kind === '60s') {
             showTopBanner('🚨', `SLA — ${a.name}`, `Tempo: ${a.time}`, '#b71c1c');
-            showBrowserNotification(`🚨 SLA ESTOURADO — ${a.name}`, `Aguardando: ${a.time}`, `sla60-${a.name}`);
-            if (document.hidden) startTitleFlash(`SLA: ${a.name}`);
         }
         setTimeout(() => drainQueue(), QUANTIDADE_DE_BEEPS * BEEP_INTERVAL_MS + 500);
     }
@@ -672,7 +489,6 @@
                         date: new Date().toDateString()
                     };
                     enqueue('novo', name || pid, '');
-                    logEvent(name, 'novo', pid);
                     console.log(`[Fila v${VERSAO}] 🆕 Novo paciente: "${name}"`);
                 }
             });
@@ -711,8 +527,6 @@
             }
 
             const h = patientAlertHistory[pid];
-
-            // FIX v2.2: mantém entrada com wasAttended=true para evitar loop
             if (h.wasAttended) return;
             if (!time) return;
 
@@ -721,9 +535,6 @@
 
             if (attended) {
                 h.wasAttended = true;
-                dailyStats.atendidosHoje++;
-                saveStats();
-                updateDashboard();
                 removePersistentAlert(pid);
                 saveHistory();
                 console.log(`[Fila v${VERSAO}] ✅ Atendido: "${name}"`);
@@ -731,42 +542,19 @@
             }
 
             if (secs >= TIME_SLA_SECONDS && !h.alerted60) {
-                h.alerted60   = true;
-                h.alerted60At = Date.now();   // [v2.4] salva timestamp para restauração
-                dailyStats.slaEstourados++;
-                saveStats();
-                updateDashboard();
+                h.alerted60 = true;
                 enqueue('60s', name, time);
                 addPersistentAlert(pid, name, time);
-                logEvent(name, 'sla60', time);
                 saveHistory();
                 console.log(`[Fila v${VERSAO}] 🚨 SLA 60s: "${name}" — ${time}`);
             } else if (secs >= TIME_30S_SECONDS && secs < TIME_SLA_SECONDS && !h.alerted30) {
                 h.alerted30 = true;
                 enqueue('30s', name, time);
-                logEvent(name, 'alerta30', time);
                 console.log(`[Fila v${VERSAO}] ⚠️ 30s: "${name}" — ${time}`);
             }
         });
 
         saveHistory();
-    }
-
-    // ========================
-    // === DEBUG (Ctrl+Alt+D)
-    // ========================
-    function printDebugState() {
-        console.group(`[Fila v${VERSAO}] 🔍 Estado`);
-        console.log('audioEnabled:', audioEnabled, '| volume:', volume);
-        console.log('keepAliveStarted:', keepAliveStarted, '| paused:', keepAliveAudio?.paused);
-        console.log('attendedCheckEnabled:', attendedCheckEnabled);
-        console.log('isFirstCycle:', isFirstCycle);
-        console.log('previousPids:', [...previousPids]);
-        console.log('persistentAlerts:', [...persistentAlerts.entries()]);
-        console.log('patientAlertHistory:', JSON.parse(JSON.stringify(patientAlertHistory)));
-        console.log('dailyStats:', dailyStats);
-        console.log('Notification.permission:', ('Notification' in window) ? Notification.permission : 'N/A');
-        console.groupEnd();
     }
 
     // ========================
@@ -804,7 +592,7 @@
         const panel = document.createElement('div');
         panel.id = 'tm_fila_panel';
         Object.assign(panel.style, {
-            position:'fixed', top:'12px', right:'12px', width:'290px',
+            position:'fixed', top:'12px', right:'12px', width:'270px',
             background:'#fff', border:'2px solid #e0e0e0', borderRadius:'16px',
             padding:'18px', zIndex:999998,
             boxShadow:'0 8px 32px rgba(0,0,0,.14)',
@@ -822,12 +610,6 @@
             <button id="fila_min" style="background:#f0f0f0;border:none;border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:14px;" title="Ctrl+Alt+F">➖</button>
         `;
         panel.appendChild(hdr);
-
-        // Dashboard
-        dashboardEl = document.createElement('div');
-        dashboardEl.style.cssText = 'background:#f8f8f8;padding:12px;border-radius:10px;margin-bottom:14px;';
-        panel.appendChild(dashboardEl);
-        updateDashboard();
 
         // Toggles
         const ctrl = document.createElement('div');
@@ -872,36 +654,11 @@
             });
         }, 0);
 
-        // Botões
+        // Botão testar som
         const btns = document.createElement('div');
-        btns.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:14px;';
+        btns.style.cssText = 'margin-top:14px;';
         const bs = 'border:none;border-radius:9px;padding:10px;font-size:13px;font-weight:800;cursor:pointer;width:100%;color:#fff;';
 
-        // Notificações nativas
-        const notifPerm = ('Notification' in window) ? Notification.permission : 'unsupported';
-        const bNotif = document.createElement('button');
-        bNotif.textContent = notifPerm === 'granted' ? '✅ Notificações Ativas'
-            : notifPerm === 'denied' ? '🚫 Notificações Bloqueadas'
-            : '🔔 Ativar Notificações';
-        bNotif.style.cssText = bs + (notifPerm === 'granted'
-            ? 'background:linear-gradient(135deg,#2e7d32,#43a047);'
-            : notifPerm === 'denied'
-                ? 'background:linear-gradient(135deg,#757575,#9e9e9e);cursor:not-allowed;'
-                : 'background:linear-gradient(135deg,#f57c00,#ffa726);');
-        bNotif.onclick = async () => {
-            if (Notification.permission === 'denied') { showToast('🚫 Desbloqueie nas configurações do browser', '#c50b0b'); return; }
-            const r = await requestNotificationPermission();
-            if (r === 'granted') {
-                bNotif.textContent = '✅ Notificações Ativas';
-                bNotif.style.background = 'linear-gradient(135deg,#2e7d32,#43a047)';
-                updateDashboard();
-                showToast('✅ Notificações ativadas!', '#2e7d32');
-                showBrowserNotification('🔔 Alerta Fila', 'Notificações ativadas!', 'teste');
-            } else { showToast('⚠️ Permissão negada', '#e65100'); }
-        };
-        btns.appendChild(bNotif);
-
-        // Testar som
         const bTest = document.createElement('button');
         bTest.textContent = '🔊 Testar Som';
         bTest.style.cssText = bs + 'background:linear-gradient(135deg,#0096D2,#00539A);';
@@ -911,41 +668,12 @@
             showToast('🔊 Testando...', '#0096D2');
         };
         btns.appendChild(bTest);
-
-        // Simular alertas
-        const bSim = document.createElement('button');
-        bSim.textContent = '🧪 Simular Alertas';
-        bSim.style.cssText = bs + 'background:linear-gradient(135deg,#7b1fa2,#ab47bc);';
-        bSim.onclick = () => {
-            if (!audioEnabled) { showToast('⚠️ Ative o áudio primeiro!', '#e65100'); return; }
-            showToast('🧪 Simulando...', '#7b1fa2');
-            setTimeout(() => enqueue('novo',  'Paciente Teste', ''),      200);
-            setTimeout(() => enqueue('30s',   'Paciente Teste', '00:30'), 4500);
-            setTimeout(() => enqueue('60s',   'Paciente Teste', '01:00'), 9000);
-            setTimeout(() => {
-                addPersistentAlert('__sim__', 'Paciente Teste', '01:00');
-                setTimeout(() => removePersistentAlert('__sim__'), 10000);
-            }, 13500);
-        };
-        btns.appendChild(bSim);
-
-        // Resetar tudo
-        const bReset = document.createElement('button');
-        bReset.textContent = '🔄 Resetar Estatísticas e Histórico';
-        bReset.style.cssText = bs + 'background:linear-gradient(135deg,#ff6b35,#f7931e);';
-        bReset.onclick = () => {
-            if (confirm('Resetar estatísticas do dia e limpar histórico de pacientes?')) {
-                resetTudo();
-                showToast('✅ Resetado!', '#2e7d32');
-            }
-        };
-        btns.appendChild(bReset);
-
         panel.appendChild(btns);
 
+        // Hint de atalhos
         const hint = document.createElement('div');
         hint.style.cssText = 'margin-top:12px;font-size:10px;color:#aaa;text-align:center;';
-        hint.textContent = 'Ctrl+Alt+F = painel | Ctrl+Alt+S = parar alertas | Ctrl+Alt+D = debug';
+        hint.textContent = 'Ctrl+Alt+F = painel | Ctrl+Alt+S = parar alertas';
         panel.appendChild(hint);
 
         document.body.appendChild(panel);
@@ -972,11 +700,6 @@
                     stopPersistent();
                     showToast('🔕 Alertas persistentes parados', '#e65100');
                     break;
-                case 'd':
-                    e.preventDefault();
-                    printDebugState();
-                    showToast('🔍 Debug no console (F12)', '#333');
-                    break;
             }
         });
     }
@@ -991,25 +714,12 @@
 
     ready(() => {
         loadState();
-
-        // [v2.4] Restaura alertas SLA ativos antes de construir o painel
-        // Importante: roda ANTES de primeAudio para que os alertas
-        // já estejam no mapa quando o áudio estiver pronto
-        if (audioEnabled) restorePersistentAlertsFromHistory();
-
         if (audioEnabled) primeAudio();
-
         buildPanel();
-
-        if ('Notification' in window && Notification.permission === 'default') {
-            setTimeout(() => requestNotificationPermission().then(updateDashboard), 1500);
-        }
-
         setInterval(checkWaitTimes, CHECK_INTERVAL_MS);
         setInterval(cleanOldHistory, CLEANUP_INTERVAL_MS);
-
         console.log(`[Fila v${VERSAO}] 🚀 Iniciado!`);
-        console.log(`[Fila v${VERSAO}] Atalhos: Ctrl+Alt+F | Ctrl+Alt+S | Ctrl+Alt+D`);
+        console.log(`[Fila v${VERSAO}] Atalhos: Ctrl+Alt+F | Ctrl+Alt+S`);
     });
 
 })();
