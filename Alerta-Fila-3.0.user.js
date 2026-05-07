@@ -24,6 +24,7 @@
  *  6. Alertas visuais desacoplados do áudio (banner dispara mesmo sem som).
  *  7. Botão "Diagnosticar DOM" no painel para depuração de seletores.
  *  8. Simulação de alerta independente dos seletores para testar pipeline.
+ *  9. (v3.0+: alertas condicionados ao status "espera suporte", parada automática em "atendimento suporte")
  */
 
 (function () {
@@ -122,12 +123,6 @@
     // ========================
     // === ÁUDIO — WebAudio API
     // ========================
-    // FIX: Toda a lógica de som foi migrada de HTML Audio + URL externa
-    // para WebAudio API com oscilador. Isso elimina:
-    //   - Dependência de rede / CORS
-    //   - URLs mortas (actions.google.com/sounds pode ser bloqueado por proxies)
-    //   - Keep-alive com loop silencioso (desnecessário com AudioContext)
-
     function getAudioCtx() {
         if (!audioCtx || audioCtx.state === 'closed') {
             try {
@@ -141,8 +136,6 @@
     }
 
     function primeAudio() {
-        // Browsers modernos suspendem AudioContext até interação do usuário.
-        // Tentamos resume() imediatamente; se falhar, aguardamos um evento.
         const ctx = getAudioCtx();
         if (!ctx) return;
 
@@ -160,8 +153,6 @@
                 requestNotificationPermission();
             })
             .catch(() => {
-                // Precisa de interação — registra listener no capture phase para
-                // garantir disparo antes que qualquer outro handler do site consuma o evento
                 console.log(`[Fila v${VERSAO}] ⏸️ Áudio suspenso. Clique ou pressione uma tecla para ativar.`);
                 showToast('🔇 Clique na página para ativar o áudio', '#e65100');
                 setupInteractionUnlock();
@@ -183,10 +174,6 @@
         document.addEventListener('keydown', unlock, { once: true, capture: true });
     }
 
-    /**
-     * Toca N beeps em sequência usando oscilador WebAudio.
-     * Todos os beeps são agendados na mesma chamada, sem setTimeout.
-     */
     function playBeeps(vol) {
         if (!audioEnabled) return;
 
@@ -197,7 +184,7 @@
         }
         if (ctx.state !== 'running') {
             console.warn(`[Fila v${VERSAO}] ⚠️ AudioContext suspenso (state: ${ctx.state}). Clique na página.`);
-            setupInteractionUnlock(); // re-registra caso o usuário ainda não tenha clicado
+            setupInteractionUnlock();
             return;
         }
 
@@ -216,7 +203,6 @@
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(BEEP_FREQ_HZ, startAt);
 
-                // Envelope suave: ataque rápido → decaimento exponencial
                 gain.gain.setValueAtTime(0, startAt);
                 gain.gain.linearRampToValueAtTime(v * 0.6, startAt + 0.015);
                 gain.gain.exponentialRampToValueAtTime(0.001, startAt + BEEP_DURATION_S);
@@ -247,7 +233,7 @@
         try {
             const n = new Notification(title, {
                 body,
-                tag: 'alerta-fila',   // tag igual substitui notificação anterior (evita spam)
+                tag: 'alerta-fila',
                 renotify: true,
                 silent: false
             });
@@ -260,9 +246,6 @@
     // ========================
     // === NOTIFICAÇÕES VISUAIS
     // ========================
-    // FIX: slideDown animation usava top:0px → top:14px, causando conflito com
-    // transform:translateX(-50%). Corrigido para usar translateY no keyframe.
-
     let bannerTimeout = null;
 
     function showTopBanner(icon, title, subtitle, bgColor) {
@@ -333,8 +316,6 @@
         return [];
     }
 
-    // Diagnóstico acessível pelo painel — lista todos os seletores e o que encontram.
-    // Também inspeciona as classes dos primeiros <tr> para ajudar a atualizar os seletores.
     function diagnoseDOM() {
         console.group(`[Fila v${VERSAO}] 🔍 Diagnóstico DOM`);
         console.log('--- Resultado por seletor ---');
@@ -342,7 +323,6 @@
             const n = document.querySelectorAll(sel).length;
             console.log(`  ${n > 0 ? '✅' : '❌'} "${sel}"  →  ${n} elemento(s)`);
         });
-
         const trs = Array.from(document.querySelectorAll('tr'));
         if (trs.length > 0) {
             console.log(`\n--- Primeiros <tr> no DOM (${trs.length} total) ---`);
@@ -350,7 +330,6 @@
                 console.log(`  [${i}] className: "${r.className}" | id: "${r.id}"`);
             });
         }
-
         const allDivs = Array.from(document.querySelectorAll('div[class]'));
         const candidates = allDivs.filter(d => {
             const c = d.className;
@@ -370,11 +349,9 @@
     // === EXTRAÇÃO DE DADOS
     // ========================
     function getPatientName(node) {
-        // Seletor específico v2.5
         const el = node.querySelector('.sc-dUWDJJ.kJwCqO p.sc-eqUAAy.kFxsPh');
         if (el) return el.textContent.trim();
 
-        // Fallback por variante de placeholder
         const IGNORE = new Set([
             'Produto', 'Contrato', 'Espera recepção', 'Masculino', 'Feminino', '|',
             'Aps Digital', 'Aps Digital Assinatura', ''
@@ -384,8 +361,6 @@
             if (!IGNORE.has(t) && !/^\d/.test(t) && !/\d{2}:\d{2}/.test(t) && t.length > 3)
                 return t;
         }
-
-        // Fallback legado
         const old = node.querySelector('#profileName');
         return old ? old.textContent.trim() : null;
     }
@@ -417,17 +392,28 @@
         return null;
     }
 
-    function isPatientBeingAttended(node) {
-        if (!attendedCheckEnabled) return false;
+    /**
+     * Retorna o texto do status (ex.: "espera suporte", "atendimento suporte").
+     * Baseado nos seletores de VirtualReceptionStatus.
+     */
+    function getPatientStatus(node) {
         const statusEl = node.querySelector(
             '.VirtualReceptionStatus p.sc-eqUAAy.dVxBaO, ' +
             '.sc-inyXkq.hkEliH p.sc-eqUAAy.dVxBaO'
         );
         if (statusEl) {
-            const t = statusEl.textContent.trim().toLowerCase();
-            if (t && t !== 'espera recepção' && t !== '-') return true;
+            return statusEl.textContent.trim().toLowerCase();
         }
-        return false;
+        return null;
+    }
+
+    /**
+     * Verifica se o paciente está em atendimento (status = "atendimento suporte").
+     * Ignora a chave attendedCheckEnabled, pois o comportamento é obrigatório.
+     */
+    function isPatientBeingAttended(node) {
+        const status = getPatientStatus(node);
+        return status === 'atendimento suporte';
     }
 
     function getPatientId(node) {
@@ -510,7 +496,7 @@
         persistentAlerts.set(pid, {
             name,
             time,
-            lastAlert: 0,          // força disparo imediato na primeira iteração
+            lastAlert: 0,
             addedAt: Date.now()
         });
         console.log(`[Fila v${VERSAO}] 🚨 Alerta persistente adicionado: "${name}"`);
@@ -533,14 +519,12 @@
             const now = Date.now();
 
             persistentAlerts.forEach((data, pid) => {
-                // Expira após PERSISTENT_SESSION_MAX_MS
                 if (now - data.addedAt > PERSISTENT_SESSION_MAX_MS) {
                     console.log(`[Fila v${VERSAO}] ⏰ Persistente expirou (2min): "${data.name}"`);
                     removePersistentAlert(pid);
                     return;
                 }
 
-                // Remove se paciente saiu do DOM ou foi atendido
                 const node = currentPidMap.get(pid) || null;
                 if (!node || isPatientBeingAttended(node)) {
                     console.log(`[Fila v${VERSAO}] ✅ Persistente removido: "${data.name}"`);
@@ -592,9 +576,6 @@
     // ========================
     // === FILA DE ALERTAS
     // ========================
-    // FIX: Alertas visuais (showTopBanner) são sempre exibidos independente do
-    // estado do áudio. O audioEnabled controla apenas o playBeeps().
-
     function enqueue(kind, name, time) {
         alertQueue.push({ kind, name, time });
         if (!isProcessingQueue) drainQueue();
@@ -605,10 +586,8 @@
         isProcessingQueue = true;
         const a = alertQueue.shift();
 
-        // Som: só se áudio ativado
         if (audioEnabled) playBeeps(volume);
 
-        // Visual: sempre
         if (a.kind === 'novo') {
             showTopBanner('🆕', 'Novo paciente na fila!', a.name, '#2e7d32');
             showBrowserNotification('🆕 Novo paciente', a.name || 'Paciente na fila');
@@ -647,7 +626,6 @@
             return;
         }
 
-        // Reconstrói mapa PID → node
         currentPidMap = new Map();
         const currentPids = new Set();
         rows.forEach(node => {
@@ -662,8 +640,7 @@
         }
 
         if (isFirstCycle) {
-            // Carga inicial: registra todos os pacientes existentes sem alertar.
-            // Alerta de "novo" SÓ dispara para pacientes que chegarem APÓS este ciclo.
+            // Apenas registra, sem alertar.
             currentPids.forEach(pid => {
                 if (!patientAlertHistory[pid]) {
                     patientAlertHistory[pid] = makeHistoryEntry();
@@ -673,55 +650,65 @@
             previousPids = new Set(currentPids);
             console.log(`[Fila v${VERSAO}] 🔒 Carga inicial: ${currentPids.size} paciente(s) registrado(s).`);
             saveHistory();
-            return; // Sai sem verificar SLA no primeiro ciclo
+            return;
         }
 
-        // ── Detecção de novos pacientes ──────────────────────────────────────────
-        // FIX v3.0: Removida a condição `&& !patientAlertHistory[pid]`.
-        // Antes, se o histórico já continha o PID (carregado do localStorage após
-        // reload), o alerta de "novo" nunca disparava, mesmo sendo um paciente
-        // genuinamente novo nesta sessão. Agora basta não estar em previousPids.
+        // ── Detecção de novos pacientes (apenas "espera suporte") ──────────────
         currentPids.forEach(pid => {
             if (!previousPids.has(pid)) {
-                const name = getPatientName(currentPidMap.get(pid));
-                // Preserva histórico existente (para não redefinir alerted30/alerted60)
-                if (!patientAlertHistory[pid]) {
-                    patientAlertHistory[pid] = makeHistoryEntry();
+                const node = currentPidMap.get(pid);
+                if (!node) return;
+                const status = getPatientStatus(node);
+                const name   = getPatientName(node);
+                if (status === 'espera suporte') {
+                    if (!patientAlertHistory[pid]) {
+                        patientAlertHistory[pid] = makeHistoryEntry();
+                    }
+                    enqueue('novo', name || pid, '');
+                    console.log(`[Fila v${VERSAO}] 🆕 Novo paciente: "${name}" (${pid})`);
                 }
-                enqueue('novo', name || pid, '');
-                console.log(`[Fila v${VERSAO}] 🆕 Novo paciente: "${name}" (${pid})`);
             }
         });
 
         previousPids = new Set(currentPids);
 
-        // ── Verificação de tempos de espera / SLA ────────────────────────────────
+        // ── Verificação de tempos de espera / SLA (apenas "espera suporte") ───
         rows.forEach(node => {
-            const pid  = getPatientId(node);
-            const name = getPatientName(node);
-            const time = getWaitingTime(node);
-            if (!pid || !name) return;
+            const pid = getPatientId(node);
+            if (!pid) return;
 
-            // Garante entrada no histórico (pacientes que vieram de ciclos anteriores)
+            const status = getPatientStatus(node);
+            const name   = getPatientName(node);
+            const time   = getWaitingTime(node);
+
+            // Se estiver em atendimento, encerra alertas
+            if (status === 'atendimento suporte') {
+                if (patientAlertHistory[pid] && !patientAlertHistory[pid].wasAttended) {
+                    patientAlertHistory[pid].wasAttended = true;
+                    removePersistentAlert(pid);
+                    saveHistory();
+                    console.log(`[Fila v${VERSAO}] ✅ Atendido: "${name}"`);
+                }
+                return;
+            }
+
+            // Só processa se estiver EXATAMENTE em "espera suporte"
+            if (status !== 'espera suporte') {
+                return; // ignora outros status desconhecidos
+            }
+
+            // Está em "espera suporte": garante histórico
             if (!patientAlertHistory[pid]) {
                 patientAlertHistory[pid] = makeHistoryEntry();
-                return; // Aguarda próximo ciclo para ter dados de tempo
+            } else if (patientAlertHistory[pid].wasAttended) {
+                // Voltou de "atendimento" para "espera" → reinicia histórico
+                patientAlertHistory[pid] = makeHistoryEntry();
             }
 
             const h = patientAlertHistory[pid];
-            if (h.wasAttended) return;
-            if (!time) return;
+            if (!time || !name) return;
 
-            const attended = isPatientBeingAttended(node);
-            const secs     = toSeconds(time);
-
-            if (attended) {
-                h.wasAttended = true;
-                removePersistentAlert(pid);
-                saveHistory();
-                console.log(`[Fila v${VERSAO}] ✅ Atendido: "${name}"`);
-                return;
-            }
+            const secs = toSeconds(time);
 
             if (secs >= TIME_SLA_SECONDS && !h.alerted60) {
                 h.alerted60 = true;
@@ -782,7 +769,6 @@
             fontFamily: '"Segoe UI",Roboto,Arial,sans-serif'
         });
 
-        // Cabeçalho
         const hdr = document.createElement('div');
         hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:2px solid #eee;';
         hdr.innerHTML = `
@@ -794,7 +780,6 @@
         `;
         panel.appendChild(hdr);
 
-        // Toggles
         const ctrl = document.createElement('div');
         ctrl.appendChild(mkToggle('🔊 Áudio', 'fila_audio', audioEnabled, inp => {
             audioEnabled = inp.checked;
@@ -819,7 +804,6 @@
         }));
         panel.appendChild(ctrl);
 
-        // Volume
         const volRow = document.createElement('div');
         volRow.style.cssText = 'margin:12px 0 4px;';
         volRow.innerHTML = `
@@ -841,7 +825,6 @@
             });
         }, 0);
 
-        // Botões
         const btns = document.createElement('div');
         btns.style.cssText = 'margin-top:14px;display:flex;flex-direction:column;gap:8px;';
         const bs = 'border:none;border-radius:9px;padding:10px;font-size:13px;font-weight:800;cursor:pointer;width:100%;color:#fff;';
@@ -875,14 +858,12 @@
         btns.appendChild(bDiag);
         panel.appendChild(btns);
 
-        // Status
         const statusDiv = document.createElement('div');
         statusDiv.id = 'fila_status';
         statusDiv.style.cssText = 'margin-top:10px;font-size:10px;color:#aaa;text-align:center;';
         statusDiv.textContent = 'Iniciando...';
         panel.appendChild(statusDiv);
 
-        // Hint atalhos
         const hint = document.createElement('div');
         hint.style.cssText = 'margin-top:4px;font-size:10px;color:#bbb;text-align:center;';
         hint.textContent = 'Ctrl+Alt+F = painel | Ctrl+Alt+S = parar alertas';
@@ -915,7 +896,6 @@
             }
         });
 
-        // Atualiza status a cada 3s
         setInterval(() => {
             const s = document.getElementById('fila_status');
             if (!s) return;
